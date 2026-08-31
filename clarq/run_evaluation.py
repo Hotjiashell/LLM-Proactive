@@ -58,10 +58,6 @@ def _install_proactive_adapter(evaluator: Any) -> None:
     original_resume_signature = evaluator._resume_signature
 
     def build_components(args: Any) -> tuple[Any, list[tuple[str, Any]], Any]:
-        if args.policy_enable_thinking:
-            raise ValueError(
-                "LLM-Proactive ClarQ requires --no-policy-enable-thinking for JSON protocol stability"
-            )
         runner, health_clients, retriever = original_build_components(args)
         policy_client = ProactivePolicyClient(runner.policy_client)
         runner.policy_client = policy_client
@@ -73,8 +69,8 @@ def _install_proactive_adapter(evaluator: Any) -> None:
             "name": POLICY_NAME,
             "version": POLICY_VERSION,
             "prompt_version": PROMPT_VERSION,
-            "protocol": "structured_decision_to_openai_tool_call",
-            "thinking_enabled": False,
+            "protocol": "freeform_procot_analysis_with_huawei_native_tools",
+            "thinking_enabled": args.policy_enable_thinking,
         }
         return config
 

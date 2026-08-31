@@ -8,7 +8,7 @@ from proactive_policy import POLICY_NAME, POLICY_VERSION, PROMPT_VERSION, Proact
 
 
 class ProactiveTraceRunner:
-    """Delegate all evaluation work while recording explicit proactive decisions."""
+    """Delegate evaluation work while recording ProCoT analysis and final actions."""
 
     def __init__(self, runner: Any, policy_client: ProactivePolicyClient):
         self._runner = runner

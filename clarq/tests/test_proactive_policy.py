@@ -19,26 +19,49 @@ from clarq_eval.parsing import PolicyProtocolError, parse_policy_response  # noq
 from clarq_eval.runner import EvaluationRunner, TOOLS  # noqa: E402
 from proactive_policy import ProactivePolicyClient  # noqa: E402
 from proactive_runner import ProactiveTraceRunner  # noqa: E402
-from run_evaluation import _install_proactive_adapter, _load_evaluator  # noqa: E402
+from run_evaluation import DEFAULT_EVAL_DIR, _install_proactive_adapter, _load_evaluator  # noqa: E402
 
 
-def model_text(content: str) -> dict[str, Any]:
-    return {"choices": [{"message": {"content": content}}]}
+def model_response(
+    content: str | None,
+    *,
+    tool_calls: list[dict[str, Any]] | None = None,
+    finish_reason: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "choices": [
+            {
+                "finish_reason": finish_reason,
+                "message": {"content": content, "tool_calls": tool_calls or []},
+            }
+        ]
+    }
+
+
+def native_tool_call(name: str, arguments: dict[str, str]) -> dict[str, Any]:
+    return {
+        "id": "model_call_1",
+        "type": "function",
+        "function": {"name": name, "arguments": json.dumps(arguments)},
+    }
 
 
 class FakePolicyService:
-    def __init__(self, responses: list[str]):
+    def __init__(self, responses: list[dict[str, Any]]):
         self.responses = list(responses)
         self.calls: list[dict[str, Any]] = []
 
-    def chat(self, messages: list[dict[str, Any]], **kwargs: Any) -> dict[str, Any]:
-        self.calls.append({"messages": messages, "kwargs": kwargs})
+    def policy_chat(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        tools: list[dict[str, Any]],
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        self.calls.append({"messages": messages, "tools": tools, "kwargs": kwargs})
         if not self.responses:
             raise AssertionError("Policy response sequence exhausted")
-        return model_text(self.responses.pop(0))
-
-    def user_simulator_chat(self, messages: list[dict[str, Any]], **kwargs: Any) -> dict[str, Any]:
-        return self.chat(messages, **kwargs)
+        return self.responses.pop(0)
 
 
 class FakeRetriever:
@@ -60,21 +83,19 @@ class FakeSuccessJudge:
 
 
 class ProactivePolicyTests(unittest.TestCase):
-    def test_structured_decision_becomes_one_native_tool_call(self) -> None:
+    def test_freeform_analysis_ends_in_one_native_tool_call(self) -> None:
         service = FakePolicyService(
             [
-                json.dumps(
-                    {
-                        "decision": {
-                            "state": "needs_clarification",
-                            "missing_information": "device model",
-                            "basis": "The model determines relevant support cases.",
-                        },
-                        "action": {
-                            "name": "clarify_user",
-                            "arguments": {"question": "Which device model are you using?"},
-                        },
-                    }
+                model_response(
+                    "Different device models can lead to different support cases. "
+                    "The requested model has not been confirmed.",
+                    tool_calls=[
+                        native_tool_call(
+                            "clarify_user",
+                            {"question": "Which device model are you using?"},
+                        )
+                    ],
+                    finish_reason="tool_calls",
                 )
             ]
         )
@@ -87,6 +108,7 @@ class ProactivePolicyTests(unittest.TestCase):
                 {"role": "user", "content": "My device has an error."},
             ],
             tools=TOOLS,
+            enable_thinking=True,
             temperature=0.0,
             max_tokens=256,
             seed=7,
@@ -96,21 +118,24 @@ class ProactivePolicyTests(unittest.TestCase):
         self.assertEqual("clarify_user", turn.tool_calls[0].name)
         self.assertEqual({"question": "Which device model are you using?"}, turn.tool_calls[0].arguments)
         self.assertEqual([], turn.violations)
-        self.assertEqual(
-            {"enable_thinking": False},
-            service.calls[0]["kwargs"]["extra_payload"]["chat_template_kwargs"],
-        )
+        self.assertTrue(service.calls[0]["kwargs"]["enable_thinking"])
+        self.assertIs(TOOLS, service.calls[0]["tools"])
+        self.assertEqual(1, len(service.calls))
         self.assertNotIn("Runner instruction", service.calls[0]["messages"][1]["content"])
-        self.assertEqual("needs_clarification", policy.finish_sample()[0]["decision"]["state"])
+        decision = policy.finish_sample()[0]
+        self.assertEqual(
+            "Different device models can lead to different support cases. The requested model has not been confirmed.",
+            decision["analysis"],
+        )
+        self.assertNotIn("missing_information", decision["analysis"])
 
     def test_invalid_action_is_rejected_before_the_agent_loop(self) -> None:
         service = FakePolicyService(
             [
-                json.dumps(
-                    {
-                        "decision": {"state": "ready_to_search"},
-                        "action": {"name": "answer_user", "arguments": {}},
-                    }
+                model_response(
+                    "The request is ready for the next step.",
+                    tool_calls=[native_tool_call("answer_user", {})],
+                    finish_reason="tool_calls",
                 )
             ]
         )
@@ -122,44 +147,41 @@ class ProactivePolicyTests(unittest.TestCase):
                 tools=TOOLS,
             )
 
+    def test_terminal_action_without_analysis_is_valid(self) -> None:
+        service = FakePolicyService(
+            [model_response("Complete", finish_reason="stop")]
+        )
+        policy = ProactivePolicyClient(service)
+
+        response = policy.policy_chat(
+            [{"role": "user", "content": "question"}],
+            tools=TOOLS,
+        )
+
+        self.assertTrue(parse_policy_response(response).is_complete)
+        self.assertEqual("", policy.finish_sample()[0]["analysis"])
+
     def test_trace_runner_uses_huawei_loop_and_preserves_decisions(self) -> None:
         service = FakePolicyService(
             [
-                json.dumps(
-                    {
-                        "decision": {
-                            "state": "needs_clarification",
-                            "missing_information": "device model",
-                            "basis": "The original request does not identify the model.",
-                        },
-                        "action": {
-                            "name": "clarify_user",
-                            "arguments": {"question": "Which device model are you using?"},
-                        },
-                    }
+                model_response(
+                    "The original request does not identify the model, which changes retrieval.",
+                    tool_calls=[
+                        native_tool_call(
+                            "clarify_user",
+                            {"question": "Which device model are you using?"},
+                        )
+                    ],
+                    finish_reason="tool_calls",
                 ),
-                json.dumps(
-                    {
-                        "decision": {
-                            "state": "ready_to_search",
-                            "missing_information": "none",
-                            "basis": "The model is now confirmed.",
-                        },
-                        "action": {
-                            "name": "search_case",
-                            "arguments": {"query": "device error Model X"},
-                        },
-                    }
+                model_response(
+                    "The user has now confirmed Model X, so the query can be specific.",
+                    tool_calls=[native_tool_call("search_case", {"query": "device error Model X"})],
+                    finish_reason="tool_calls",
                 ),
-                json.dumps(
-                    {
-                        "decision": {
-                            "state": "complete",
-                            "missing_information": "none",
-                            "basis": "The latest retrieved case matches the confirmed model.",
-                        },
-                        "action": {"name": "Complete", "arguments": {}},
-                    }
+                model_response(
+                    "The latest retrieved case is a sufficient match for the confirmed model.\nComplete",
+                    finish_reason="stop",
                 ),
             ]
         )
@@ -198,6 +220,7 @@ class ProactivePolicyTests(unittest.TestCase):
         self.assertEqual("clarify_user", decisions[0]["action"]["name"])
         self.assertEqual("search_case", decisions[1]["action"]["name"])
         self.assertEqual("Complete", decisions[2]["action"]["name"])
+        self.assertIn("does not identify the model", decisions[0]["analysis"])
         second_prompt = service.calls[1]["messages"][1]["content"]
         self.assertIn("Model X", second_prompt)
         self.assertNotIn("hidden intent", second_prompt)
@@ -219,14 +242,22 @@ class ProactivePolicyTests(unittest.TestCase):
                     "--simulator-model",
                     "simulator-model",
                     "--skip-judge",
+                    "--policy-enable-thinking",
                 ]
             )
         config = evaluator._run_config(args)
         self.assertEqual("llm-proactive-clarq", config["policy_adapter"]["name"])
-        self.assertFalse(config["policy_adapter"]["thinking_enabled"])
+        self.assertTrue(config["policy_adapter"]["thinking_enabled"])
+        self.assertEqual(
+            "freeform_procot_analysis_with_huawei_native_tools",
+            config["policy_adapter"]["protocol"],
+        )
         native_config = dict(config)
         native_config.pop("policy_adapter")
         self.assertNotEqual(evaluator._resume_signature(config), evaluator._resume_signature(native_config))
+
+    def test_default_evaluator_path_points_to_sibling_huawei_checkout(self) -> None:
+        self.assertEqual(EVAL_DIR.resolve(), DEFAULT_EVAL_DIR.resolve())
 
 
 if __name__ == "__main__":

@@ -6,10 +6,11 @@ over `../../huawei_dial/workspace/eval`, not a second evaluator.
 
 The policy sees the initial request, earlier actions, user-simulator replies,
 and retrieved cases. It never receives ClarQ's `core_intent`, `known_info`,
-target case ID, target title, or reference answer. Each turn has one short
-structured decision and one action. The adapter validates that decision, then
-converts it to Huawei's standard `clarify_user` or `search_case` tool call, or
-the `Complete` terminal response.
+target case ID, target title, or reference answer. In one model call per turn,
+it first writes a free-form ProCoT analysis, then makes one native
+`clarify_user` or `search_case` tool call from Huawei's own `TOOLS` definition.
+For completion, it ends the content with `Complete`. The adapter records the
+analysis and normalizes the result for Huawei's evaluator.
 
 ## Setup
 
@@ -26,10 +27,11 @@ embedding service in `.env`. Variable names match Huawei's
 `workspace/eval/config.example.env`; additional timeout and retriever tuning
 may be copied there unchanged. Do not place credentials in the example file.
 
-The policy endpoint only needs OpenAI-compatible chat/completions support. It
-does not need native function calling because the adapter requests JSON and
-emits native tool calls to the Huawei agent loop. Keep
-`POLICY_ENABLE_THINKING=false` for a stable structured-action protocol.
+The policy endpoint must support OpenAI-compatible native function calling.
+The exact `TOOLS` object supplied by Huawei's evaluator is forwarded to the
+policy endpoint, rather than duplicated as a separate text-only action schema.
+`POLICY_ENABLE_THINKING` controls the model service's own analysis mode; the
+adapter does not force the analysis into a schema.
 
 ## Run
 
@@ -63,11 +65,7 @@ Huawei writes `trajectories.jsonl`, `metrics.json`, `report.md`, and
   "decisions": [
     {
       "turn": 1,
-      "decision": {
-        "state": "needs_clarification",
-        "missing_information": "device model",
-        "basis": "..."
-      },
+      "analysis": "The device model would select different support cases, so one clarification is needed.",
       "action": {
         "name": "clarify_user",
         "arguments": {"question": "..."}
