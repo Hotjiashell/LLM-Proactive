@@ -17,8 +17,8 @@ from clarq_eval.parsing import PolicyProtocolError, parse_policy_response
 
 
 POLICY_NAME = "llm-proactive-clarq"
-POLICY_VERSION = "3.0"
-PROMPT_VERSION = "2026-08-31-procot-native-tools"
+POLICY_VERSION = "4.0"
+PROMPT_VERSION = "2026-09-01-procot-native-tools-complete"
 
 
 PROACTIVE_SYSTEM_PROMPT = """You are the decision component of a conversational case-retrieval agent.
@@ -32,9 +32,11 @@ You may take exactly one action:
 
 The trace is the only state you may use.
 
-For clarify_user or search_case, put the analysis in the assistant content and then make exactly one native tool call using the tool definitions supplied with this request. Do not write a tool-call JSON object in the assistant content.
-
-For Complete, do not make a tool call. Put the analysis first, then make the last non-empty line exactly `Complete`. If there is no useful analysis, output only `Complete`.
+Put the analysis in the assistant content, then make exactly one native tool call
+using the tool definitions supplied with this request. This includes Complete:
+call `Complete` with an empty arguments object when the latest retrieved cases
+are sufficient. Do not write a tool-call JSON object or terminal action text in
+the assistant content.
 """
 
 
@@ -89,7 +91,7 @@ def _trace_from_messages(messages: Sequence[Mapping[str, Any]]) -> list[dict[str
 
 
 def _normalise_action(payload: Mapping[str, Any]) -> tuple[str, dict[str, str]]:
-    """Validate the terminal structured action and return its ClarQ form."""
+    """Validate one native action tool call and return its ClarQ form."""
 
     raw_name = payload.get("name")
     raw_arguments = payload.get("arguments", {})
@@ -136,17 +138,6 @@ def _normalized_model_response(response: dict[str, Any]) -> dict[str, Any]:
             }
         ]
     }
-
-
-def _analysis_before_complete(content: str) -> str:
-    """Extract optional free-form analysis from a terminal ProCoT response."""
-
-    lines = content.strip().splitlines()
-    if not lines or lines[-1].strip().lower() != "complete":
-        raise PolicyProtocolError(
-            "LLM-Proactive terminal response must end with a line containing exactly Complete"
-        )
-    return "\n".join(lines[:-1]).strip()
 
 
 class ProactivePolicyClient:
@@ -201,26 +192,12 @@ class ProactivePolicyClient:
             seed=seed,
         )
         parsed = parse_policy_response(_normalized_model_response(response))
-        if len(parsed.tool_calls) > 1:
-            raise PolicyProtocolError("LLM-Proactive response must contain at most one native tool call")
-        if parsed.tool_calls:
-            call = parsed.tool_calls[0]
-            analysis = parsed.cleaned_content
-            name, arguments = _normalise_action({"name": call.name, "arguments": call.arguments})
-        else:
-            analysis = _analysis_before_complete(parsed.cleaned_content)
-            name, arguments = "Complete", {}
+        if len(parsed.tool_calls) != 1:
+            raise PolicyProtocolError("LLM-Proactive response must contain exactly one native tool call")
+        call = parsed.tool_calls[0]
+        analysis = parsed.cleaned_content
+        name, arguments = _normalise_action({"name": call.name, "arguments": call.arguments})
         self._record_decision(analysis, name, arguments)
-
-        if name == "Complete":
-            return {
-                "choices": [
-                    {
-                        "finish_reason": "stop",
-                        "message": {"content": "Complete", "tool_calls": []},
-                    }
-                ]
-            }
 
         with self._call_lock:
             self._next_call_number += 1

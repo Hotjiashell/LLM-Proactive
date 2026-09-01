@@ -187,7 +187,7 @@ TopKG 可以直接在 Python 中调用 `eval_topkg`，或修改 `topkg/eval.py` 
 
 `clarq/` 将 LLM-Proactive 的“先作中间决策、再执行动作”策略接入 Huawei ClarQ。它直接复用 `../huawei_dial/workspace/eval` 的 ClarQ 测试数据、混合检索器、grounded / random 用户模拟器、Success Judge、轨迹指标和报告；不会复制或改变这些评测口径。
 
-策略模型每回合只调用一次：先以自由自然语言完成 ProCoT 分析，再在同一响应中调用 Huawei 原生的 `clarify_user` 或 `search_case` 工具；完成时则让最后一行输出 `Complete`。适配器直接转发 Huawei 的同一份 `TOOLS` 定义，记录分析文本后再规范化结果，因此策略服务需要支持 OpenAI-compatible function calling。每条非基础设施失败的轨迹都会额外保存 `proactive_policy.decisions`，而 `run_config.json` 会记录适配器版本，避免与非 Proactive 轨迹混合断点续跑。
+策略模型每回合只调用一次：先以自由自然语言完成 ProCoT 分析，再在同一响应中调用 Huawei 原生的 `clarify_user`、`search_case` 或 `Complete` 工具；`Complete` 使用空参数对象。适配器直接转发 Huawei 的同一份 `TOOLS` 定义，记录分析文本后再规范化结果，因此策略服务需要支持 OpenAI-compatible function calling。每条非基础设施失败的轨迹都会额外保存 `proactive_policy.decisions`，而 `run_config.json` 会记录适配器版本，避免与非 Proactive 轨迹混合断点续跑。
 
 ```bash
 cd clarq

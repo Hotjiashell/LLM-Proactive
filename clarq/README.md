@@ -7,10 +7,10 @@ over `../../huawei_dial/workspace/eval`, not a second evaluator.
 The policy sees the initial request, earlier actions, user-simulator replies,
 and retrieved cases. It never receives ClarQ's `core_intent`, `known_info`,
 target case ID, target title, or reference answer. In one model call per turn,
-it first writes a free-form ProCoT analysis, then makes one native
-`clarify_user` or `search_case` tool call from Huawei's own `TOOLS` definition.
-For completion, it ends the content with `Complete`. The adapter records the
-analysis and normalizes the result for Huawei's evaluator.
+it first writes a free-form ProCoT analysis, then makes exactly one native
+`clarify_user`, `search_case`, or `Complete` tool call from Huawei's own
+`TOOLS` definition. `Complete` takes an empty arguments object. The adapter
+records the analysis and normalizes the result for Huawei's evaluator.
 
 ## Setup
 

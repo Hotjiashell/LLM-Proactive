@@ -120,6 +120,7 @@ class ProactivePolicyTests(unittest.TestCase):
         self.assertEqual([], turn.violations)
         self.assertTrue(service.calls[0]["kwargs"]["enable_thinking"])
         self.assertIs(TOOLS, service.calls[0]["tools"])
+        self.assertEqual("Complete", service.calls[0]["tools"][2]["function"]["name"])
         self.assertEqual(1, len(service.calls))
         self.assertNotIn("Runner instruction", service.calls[0]["messages"][1]["content"])
         decision = policy.finish_sample()[0]
@@ -147,9 +148,15 @@ class ProactivePolicyTests(unittest.TestCase):
                 tools=TOOLS,
             )
 
-    def test_terminal_action_without_analysis_is_valid(self) -> None:
+    def test_complete_tool_without_analysis_is_valid(self) -> None:
         service = FakePolicyService(
-            [model_response("Complete", finish_reason="stop")]
+            [
+                model_response(
+                    None,
+                    tool_calls=[native_tool_call("Complete", {})],
+                    finish_reason="tool_calls",
+                )
+            ]
         )
         policy = ProactivePolicyClient(service)
 
@@ -158,7 +165,9 @@ class ProactivePolicyTests(unittest.TestCase):
             tools=TOOLS,
         )
 
-        self.assertTrue(parse_policy_response(response).is_complete)
+        turn = parse_policy_response(response)
+        self.assertEqual("Complete", turn.tool_calls[0].name)
+        self.assertEqual({}, turn.tool_calls[0].arguments)
         self.assertEqual("", policy.finish_sample()[0]["analysis"])
 
     def test_trace_runner_uses_huawei_loop_and_preserves_decisions(self) -> None:
@@ -180,8 +189,9 @@ class ProactivePolicyTests(unittest.TestCase):
                     finish_reason="tool_calls",
                 ),
                 model_response(
-                    "The latest retrieved case is a sufficient match for the confirmed model.\nComplete",
-                    finish_reason="stop",
+                    "The latest retrieved case is a sufficient match for the confirmed model.",
+                    tool_calls=[native_tool_call("Complete", {})],
+                    finish_reason="tool_calls",
                 ),
             ]
         )
